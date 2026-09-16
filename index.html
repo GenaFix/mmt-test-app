@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Кинезио Трекер ММТ (v2)</title>
+    <title>Кинезио Трекер ММТ (v4)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -69,6 +69,7 @@
             box-sizing: border-box;
         }
         .status { font-size: 14px; color: #aaaaaa; text-align: center; margin-bottom: 5px; }
+        .chart-title { font-size: 12px; color: #888; text-align: center; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;}
     </style>
 </head>
 <body>
@@ -77,22 +78,24 @@
         <button id="connectBtn">Подключить BLE</button>
         <div id="status" class="status">Статус: Отключено</div>
         
-        <button id="calibrateBtn">Обнулить (Калибровка)</button>
+        <button id="calibrateBtn">Обнулить (Стереть историю)</button>
         
         <div class="slider-container">
             <span>Чувств.</span>
-            <input type="range" id="sensitivitySlider" min="0.5" max="10" step="0.5" value="1">
-            <span id="sensValue">1x</span>
+            <input type="range" id="sensitivitySlider" min="1" max="50" step="1" value="10">
+            <span id="sensValue">10x</span>
         </div>
     </div>
 
     <!-- График движения -->
     <div class="chart-container">
+        <div class="chart-title">Угол наклона (Вверх / Вниз)</div>
         <canvas id="motionChart"></canvas>
     </div>
 
     <!-- График силы -->
     <div class="chart-container">
+        <div class="chart-title">Давление мышцы (Гипотонус < 0)</div>
         <canvas id="forceChart"></canvas>
     </div>
 
@@ -103,33 +106,30 @@
         let forceChart, motionChart;
         const maxDataPoints = 100;
 
-        // Переменные для сырых данных
         let rawFSR = 0, rawPitch = 0, rawRoll = 0;
-        
-        // Переменные для калибровки (смещения)
         let offsetFSR = 0, offsetPitch = 0, offsetRoll = 0;
-        
-        // Множитель чувствительности
-        let sensitivity = 1;
+        let sensitivity = 10; 
 
-        // Инициализация графиков
         function initCharts() {
             const motionCtx = document.getElementById('motionChart').getContext('2d');
             motionChart = new Chart(motionCtx, {
-                type: 'scatter',
+                type: 'line',
                 data: {
+                    labels: Array(maxDataPoints).fill(''),
                     datasets: [{
-                        label: 'Баланс',
-                        data: [{x: 0, y: 0}],
-                        backgroundColor: '#ff4757',
-                        pointRadius: 8
+                        label: 'Наклон',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#ff4757',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.1
                     }]
                 },
                 options: {
                     animation: false,
                     scales: {
-                        x: { min: -45, max: 45, title: { display: true, text: 'Roll', color: '#fff' }, grid: {color: '#333', zeroLineColor: '#fff'} },
-                        y: { min: -45, max: 45, title: { display: true, text: 'Pitch', color: '#fff' }, grid: {color: '#333', zeroLineColor: '#fff'} }
+                        x: { display: false },
+                        y: { min: -90, max: 90, grid: {color: '#333', zeroLineColor: '#fff'} }
                     },
                     plugins: { legend: { display: false } }
                 }
@@ -153,27 +153,20 @@
                     animation: false,
                     scales: {
                         x: { display: false },
-                        // Настраиваем Y так, чтобы ноль был виден и график мог уходить в минус
-                        y: { suggestedMin: -50, suggestedMax: 100, grid: {color: '#333', zeroLineColor: '#fff'} }
+                        y: { min: -150, max: 150, grid: {color: '#333', zeroLineColor: '#fff'} }
                     },
                     plugins: { legend: { display: false } }
                 }
             });
         }
 
-        // Обновление интерфейса
         function updateDashboards() {
-            // 1. Вычитаем офсеты (тарируем)
-            // 2. Умножаем на ползунок чувствительности
-            let displayRoll = (rawRoll - offsetRoll) * sensitivity;
-            let displayPitch = (rawPitch - offsetPitch) * sensitivity;
+            let displayPitch = (rawPitch - offsetPitch); 
             let displayFSR = (rawFSR - offsetFSR) * sensitivity;
 
-            // Ограничиваем вылет точки за пределы мишени
-            if(displayRoll > 45) displayRoll = 45; if(displayRoll < -45) displayRoll = -45;
-            if(displayPitch > 45) displayPitch = 45; if(displayPitch < -45) displayPitch = -45;
-
-            motionChart.data.datasets[0].data[0] = { x: displayRoll, y: displayPitch };
+            let motionData = motionChart.data.datasets[0].data;
+            motionData.push(displayPitch);
+            motionData.shift();
             motionChart.update();
 
             let forceData = forceChart.data.datasets[0].data;
@@ -181,25 +174,28 @@
             forceData.shift();
             forceChart.update();
         }
-
-        // --- Обработка интерфейса ---
         
-        // Кнопка калибровки
+        // Очистка истории при калибровке
         document.getElementById('calibrateBtn').addEventListener('click', () => {
+            // Запоминаем текущее положение как ноль
             offsetFSR = rawFSR;
             offsetPitch = rawPitch;
             offsetRoll = rawRoll;
-            // После нажатия графики мгновенно прыгнут в ноль
-            updateDashboards(); 
+            
+            // Заполняем историю графиков нулями, чтобы стереть старые всплески
+            motionChart.data.datasets[0].data = Array(maxDataPoints).fill(0);
+            forceChart.data.datasets[0].data = Array(maxDataPoints).fill(0);
+            
+            // Принудительно отрисовываем чистые графики
+            motionChart.update();
+            forceChart.update();
         });
 
-        // Ползунок чувствительности
         document.getElementById('sensitivitySlider').addEventListener('input', (e) => {
             sensitivity = parseFloat(e.target.value);
             document.getElementById('sensValue').innerText = sensitivity + 'x';
         });
 
-        // --- Web Bluetooth ---
         let dataBuffer = '';
 
         async function connectBLE() {
@@ -244,11 +240,9 @@
                     let r = parseFloat(parts[2]);
                     
                     if (!isNaN(f) && !isNaN(p) && !isNaN(r)) {
-                        // Обновляем сырые значения
                         rawFSR = f;
                         rawPitch = p;
                         rawRoll = r;
-                        
                         updateDashboards();
                     }
                 }
