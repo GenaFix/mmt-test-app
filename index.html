@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Кинезио Трекер ММТ (v2)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-bg: #1e1e1e;
+            --text-color: #ffffff;
+            --accent-color: #007bff;
+            --calib-color: #ff9f43;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .controls {
+            width: 100%;
+            max-width: 400px;
+            background: var(--panel-bg);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        #connectBtn { background-color: var(--accent-color); }
+        #connectBtn:active { background-color: #0056b3; }
+        
+        #calibrateBtn { background-color: var(--calib-color); color: #000; }
+        #calibrateBtn:active { background-color: #cc7a2b; }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 10px;
+        }
+        input[type=range] {
+            flex-grow: 1;
+            margin: 0 15px;
+        }
+        .chart-container {
+            width: 100%;
+            max-width: 400px;
+            background: var(--panel-bg);
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+        }
+        .status { font-size: 14px; color: #aaaaaa; text-align: center; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="connectBtn">Подключить BLE</button>
+        <div id="status" class="status">Статус: Отключено</div>
+        
+        <button id="calibrateBtn">Обнулить (Калибровка)</button>
+        
+        <div class="slider-container">
+            <span>Чувств.</span>
+            <input type="range" id="sensitivitySlider" min="0.5" max="10" step="0.5" value="1">
+            <span id="sensValue">1x</span>
+        </div>
+    </div>
+
+    <!-- График движения -->
+    <div class="chart-container">
+        <canvas id="motionChart"></canvas>
+    </div>
+
+    <!-- График силы -->
+    <div class="chart-container">
+        <canvas id="forceChart"></canvas>
+    </div>
+
+    <script>
+        const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+        const TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+        let forceChart, motionChart;
+        const maxDataPoints = 100;
+
+        // Переменные для сырых данных
+        let rawFSR = 0, rawPitch = 0, rawRoll = 0;
+        
+        // Переменные для калибровки (смещения)
+        let offsetFSR = 0, offsetPitch = 0, offsetRoll = 0;
+        
+        // Множитель чувствительности
+        let sensitivity = 1;
+
+        // Инициализация графиков
+        function initCharts() {
+            const motionCtx = document.getElementById('motionChart').getContext('2d');
+            motionChart = new Chart(motionCtx, {
+                type: 'scatter',
+                data: {
+                    datasets: [{
+                        label: 'Баланс',
+                        data: [{x: 0, y: 0}],
+                        backgroundColor: '#ff4757',
+                        pointRadius: 8
+                    }]
+                },
+                options: {
+                    animation: false,
+                    scales: {
+                        x: { min: -45, max: 45, title: { display: true, text: 'Roll', color: '#fff' }, grid: {color: '#333', zeroLineColor: '#fff'} },
+                        y: { min: -45, max: 45, title: { display: true, text: 'Pitch', color: '#fff' }, grid: {color: '#333', zeroLineColor: '#fff'} }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            const forceCtx = document.getElementById('forceChart').getContext('2d');
+            forceChart = new Chart(forceCtx, {
+                type: 'line',
+                data: {
+                    labels: Array(maxDataPoints).fill(''),
+                    datasets: [{
+                        label: 'Сила',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#2ed573',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    animation: false,
+                    scales: {
+                        x: { display: false },
+                        // Настраиваем Y так, чтобы ноль был виден и график мог уходить в минус
+                        y: { suggestedMin: -50, suggestedMax: 100, grid: {color: '#333', zeroLineColor: '#fff'} }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        // Обновление интерфейса
+        function updateDashboards() {
+            // 1. Вычитаем офсеты (тарируем)
+            // 2. Умножаем на ползунок чувствительности
+            let displayRoll = (rawRoll - offsetRoll) * sensitivity;
+            let displayPitch = (rawPitch - offsetPitch) * sensitivity;
+            let displayFSR = (rawFSR - offsetFSR) * sensitivity;
+
+            // Ограничиваем вылет точки за пределы мишени
+            if(displayRoll > 45) displayRoll = 45; if(displayRoll < -45) displayRoll = -45;
+            if(displayPitch > 45) displayPitch = 45; if(displayPitch < -45) displayPitch = -45;
+
+            motionChart.data.datasets[0].data[0] = { x: displayRoll, y: displayPitch };
+            motionChart.update();
+
+            let forceData = forceChart.data.datasets[0].data;
+            forceData.push(displayFSR);
+            forceData.shift();
+            forceChart.update();
+        }
+
+        // --- Обработка интерфейса ---
+        
+        // Кнопка калибровки
+        document.getElementById('calibrateBtn').addEventListener('click', () => {
+            offsetFSR = rawFSR;
+            offsetPitch = rawPitch;
+            offsetRoll = rawRoll;
+            // После нажатия графики мгновенно прыгнут в ноль
+            updateDashboards(); 
+        });
+
+        // Ползунок чувствительности
+        document.getElementById('sensitivitySlider').addEventListener('input', (e) => {
+            sensitivity = parseFloat(e.target.value);
+            document.getElementById('sensValue').innerText = sensitivity + 'x';
+        });
+
+        // --- Web Bluetooth ---
+        let dataBuffer = '';
+
+        async function connectBLE() {
+            try {
+                document.getElementById('status').innerText = 'Поиск...';
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: 'Holyiot' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                device.addEventListener('gattserverdisconnected', () => {
+                    document.getElementById('status').innerText = 'Отключено';
+                });
+
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                const characteristic = await service.getCharacteristic(TX_CHAR_UUID);
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', handleData);
+
+                document.getElementById('status').innerText = 'Подключено. Ждем данные...';
+            } catch (error) {
+                console.error(error);
+                document.getElementById('status').innerText = 'Ошибка: ' + error.message;
+            }
+        }
+
+        function handleData(event) {
+            const value = event.target.value;
+            const decoder = new TextDecoder('utf-8');
+            dataBuffer += decoder.decode(value);
+
+            let lines = dataBuffer.split('\n');
+            dataBuffer = lines.pop(); 
+
+            lines.forEach(line => {
+                let parts = line.trim().split(',');
+                if (parts.length === 3) {
+                    let f = parseFloat(parts[0]);
+                    let p = parseFloat(parts[1]);
+                    let r = parseFloat(parts[2]);
+                    
+                    if (!isNaN(f) && !isNaN(p) && !isNaN(r)) {
+                        // Обновляем сырые значения
+                        rawFSR = f;
+                        rawPitch = p;
+                        rawRoll = r;
+                        
+                        updateDashboards();
+                    }
+                }
+            });
+        }
+
+        document.getElementById('connectBtn').addEventListener('click', connectBLE);
+        initCharts();
+    </script>
+</body>
+</html>
