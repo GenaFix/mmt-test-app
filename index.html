@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Кинезио Трекер ММТ (v4)</title>
+    <title>Кинезио Трекер ММТ (v5 - PRO)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -22,15 +22,18 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            height: 100vh; /* Занимаем всю высоту экрана */
+            box-sizing: border-box;
         }
         .controls {
             width: 100%;
-            max-width: 400px;
+            max-width: 600px;
             background: var(--panel-bg);
             border-radius: 10px;
             padding: 15px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
             box-sizing: border-box;
+            flex-shrink: 0; /* Панель управления не сжимается */
         }
         button {
             width: 100%;
@@ -53,7 +56,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-top: 10px;
+            margin-top: 5px;
         }
         input[type=range] {
             flex-grow: 1;
@@ -61,15 +64,21 @@
         }
         .chart-container {
             width: 100%;
-            max-width: 400px;
+            max-width: 600px;
             background: var(--panel-bg);
             border-radius: 10px;
             padding: 10px;
-            margin-bottom: 15px;
             box-sizing: border-box;
+            flex-grow: 1; /* График занимает всё оставшееся место */
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+        canvas {
+            flex-grow: 1;
         }
         .status { font-size: 14px; color: #aaaaaa; text-align: center; margin-bottom: 5px; }
-        .chart-title { font-size: 12px; color: #888; text-align: center; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;}
+        .chart-title { font-size: 14px; color: #888; text-align: center; margin-bottom: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;}
     </style>
 </head>
 <body>
@@ -78,22 +87,16 @@
         <button id="connectBtn">Подключить BLE</button>
         <div id="status" class="status">Статус: Отключено</div>
         
-        <button id="calibrateBtn">Обнулить (Стереть историю)</button>
+        <button id="calibrateBtn">Обнулить график</button>
         
         <div class="slider-container">
             <span>Чувств.</span>
-            <input type="range" id="sensitivitySlider" min="1" max="50" step="1" value="10">
-            <span id="sensValue">10x</span>
+            <input type="range" id="sensitivitySlider" min="1" max="50" step="1" value="15">
+            <span id="sensValue">15x</span>
         </div>
     </div>
 
-    <!-- График движения -->
-    <div class="chart-container">
-        <div class="chart-title">Угол наклона (Вверх / Вниз)</div>
-        <canvas id="motionChart"></canvas>
-    </div>
-
-    <!-- График силы -->
+    <!-- График силы на весь экран -->
     <div class="chart-container">
         <div class="chart-title">Давление мышцы (Гипотонус < 0)</div>
         <canvas id="forceChart"></canvas>
@@ -103,38 +106,18 @@
         const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
         const TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
-        let forceChart, motionChart;
-        const maxDataPoints = 100;
+        let forceChart;
+        const maxDataPoints = 120; // Чуть увеличил хвост истории
 
-        let rawFSR = 0, rawPitch = 0, rawRoll = 0;
-        let offsetFSR = 0, offsetPitch = 0, offsetRoll = 0;
-        let sensitivity = 10; 
+        let rawFSR = 0;
+        let offsetFSR = 0;
+        let sensitivity = 15; 
 
-        function initCharts() {
-            const motionCtx = document.getElementById('motionChart').getContext('2d');
-            motionChart = new Chart(motionCtx, {
-                type: 'line',
-                data: {
-                    labels: Array(maxDataPoints).fill(''),
-                    datasets: [{
-                        label: 'Наклон',
-                        data: Array(maxDataPoints).fill(0),
-                        borderColor: '#ff4757',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        tension: 0.1
-                    }]
-                },
-                options: {
-                    animation: false,
-                    scales: {
-                        x: { display: false },
-                        y: { min: -90, max: 90, grid: {color: '#333', zeroLineColor: '#fff'} }
-                    },
-                    plugins: { legend: { display: false } }
-                }
-            });
+        // Массив для программного сглаживания (Moving Average)
+        let fsrHistory = [];
+        const smoothingWindow = 5; 
 
+        function initChart() {
             const forceCtx = document.getElementById('forceChart').getContext('2d');
             forceChart = new Chart(forceCtx, {
                 type: 'line',
@@ -144,13 +127,18 @@
                         label: 'Сила',
                         data: Array(maxDataPoints).fill(0),
                         borderColor: '#2ed573',
-                        borderWidth: 2,
+                        backgroundColor: 'rgba(46, 213, 115, 0.1)',
+                        borderWidth: 3,
                         pointRadius: 0,
-                        tension: 0.1
+                        tension: 0.2, // Делает линию более плавной
+                        fill: true
                     }]
                 },
                 options: {
                     animation: false,
+                    responsive: true,
+                    maintainAspectRatio: false, // Позволяет графику тянуться на весь экран
+                    interaction: { mode: 'none' }, // Отключаем лишние расчеты наведений
                     scales: {
                         x: { display: false },
                         y: { min: -150, max: 150, grid: {color: '#333', zeroLineColor: '#fff'} }
@@ -160,35 +148,29 @@
             });
         }
 
-        function updateDashboards() {
-            let displayPitch = (rawPitch - offsetPitch); 
-            let displayFSR = (rawFSR - offsetFSR) * sensitivity;
+        function updateDashboard() {
+            // Сглаживание данных (убираем "пилу")
+            fsrHistory.push(rawFSR);
+            if (fsrHistory.length > smoothingWindow) {
+                fsrHistory.shift();
+            }
+            let smoothedFSR = fsrHistory.reduce((a, b) => a + b, 0) / fsrHistory.length;
 
-            let motionData = motionChart.data.datasets[0].data;
-            motionData.push(displayPitch);
-            motionData.shift();
-            motionChart.update();
+            // Применяем калибровку и чувствительность
+            let displayFSR = (smoothedFSR - offsetFSR) * sensitivity;
 
             let forceData = forceChart.data.datasets[0].data;
             forceData.push(displayFSR);
             forceData.shift();
-            forceChart.update();
+            
+            // Оптимизированное обновление
+            forceChart.update('none'); 
         }
         
-        // Очистка истории при калибровке
         document.getElementById('calibrateBtn').addEventListener('click', () => {
-            // Запоминаем текущее положение как ноль
             offsetFSR = rawFSR;
-            offsetPitch = rawPitch;
-            offsetRoll = rawRoll;
-            
-            // Заполняем историю графиков нулями, чтобы стереть старые всплески
-            motionChart.data.datasets[0].data = Array(maxDataPoints).fill(0);
             forceChart.data.datasets[0].data = Array(maxDataPoints).fill(0);
-            
-            // Принудительно отрисовываем чистые графики
-            motionChart.update();
-            forceChart.update();
+            forceChart.update('none');
         });
 
         document.getElementById('sensitivitySlider').addEventListener('input', (e) => {
@@ -234,23 +216,20 @@
 
             lines.forEach(line => {
                 let parts = line.trim().split(',');
-                if (parts.length === 3) {
+                // Берем только первое значение (FSR), игнорируя остальное
+                if (parts.length > 0) {
                     let f = parseFloat(parts[0]);
-                    let p = parseFloat(parts[1]);
-                    let r = parseFloat(parts[2]);
                     
-                    if (!isNaN(f) && !isNaN(p) && !isNaN(r)) {
+                    if (!isNaN(f)) {
                         rawFSR = f;
-                        rawPitch = p;
-                        rawRoll = r;
-                        updateDashboards();
+                        updateDashboard();
                     }
                 }
             });
         }
 
         document.getElementById('connectBtn').addEventListener('click', connectBLE);
-        initCharts();
+        initChart();
     </script>
 </body>
 </html>
