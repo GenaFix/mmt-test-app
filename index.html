@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>MMT Tracker (v9 - Kinesio Pro)</title>
+    <title>Кинезио Трекер (v8 - Ultra Fast)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -91,17 +91,17 @@
         <button id="connectBtn">Подключить BLE</button>
         <div id="status" class="status">Статус: Отключено</div>
         
-        <button id="calibrateBtn">КАЛИБРОВКА НУЛЯ (PRE-TENSION)</button>
+        <button id="calibrateBtn">Обнулить (Калибровка 0)</button>
         
         <div class="slider-container">
             <span>Чувств.</span>
-            <input type="range" id="sensitivitySlider" min="1" max="50" step="1" value="10">
-            <span id="sensValue">10x</span>
+            <input type="range" id="sensitivitySlider" min="1" max="50" step="1" value="15">
+            <span id="sensValue">15x</span>
         </div>
     </div>
 
     <div class="chart-container">
-        <div class="chart-title">Нормотонус (Зеленый) / Гипотонус (Красный)</div>
+        <div class="chart-title">Гипертонус (Вверх) / Гипотонус (Вниз)</div>
         <canvas id="forceChart"></canvas>
     </div>
 
@@ -110,16 +110,11 @@
         const TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
         let forceChart;
-        const maxDataPoints = 120; // Около 4 секунд истории
+        const maxDataPoints = 120; // Длина хвоста графика
 
-        // Переменные для математики
         let rawFSR = 0;
-        let smoothedFSR = 0;
         let offsetFSR = 0;
-        let currentDisplayFSR = 0; 
-        
-        let sensitivity = 10; 
-        const emaAlpha = 0.4; // Коэффициент сглаживания (1 - без сглаживания, 0.1 - сильное)
+        let sensitivity = 15; 
 
         function initChart() {
             const forceCtx = document.getElementById('forceChart').getContext('2d');
@@ -128,20 +123,17 @@
                 data: {
                     labels: Array(maxDataPoints).fill(''),
                     datasets: [{
-                        label: 'Давление',
+                        label: 'Сила',
                         data: Array(maxDataPoints).fill(0),
+                        borderColor: '#2ed573',
                         borderWidth: 3, 
                         pointRadius: 0,
-                        tension: 0.2, // Плавные изгибы
-                        fill: false,
-                        // УМНАЯ РАСКРАСКА: Все что ниже нуля - красное, выше - зеленое
-                        segment: {
-                            borderColor: ctx => ctx.p0.parsed.y < 0 ? '#ff4757' : '#2ed573'
-                        }
+                        tension: 0, // 0 = абсолютная резкость, никаких сглаживаний углов
+                        fill: false
                     }]
                 },
                 options: {
-                    animation: false,
+                    animation: false, // Отключаем анимации для мгновенного отклика
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: { mode: 'none' },
@@ -150,10 +142,17 @@
                         y: { 
                             min: -200, 
                             max: 200,  
-                            ticks: { stepSize: 50, color: '#555' },
+                            ticks: { stepSize: 50, color: '#888' },
                             grid: {
-                                color: (context) => context.tick.value === 0 ? 'rgba(255, 255, 255, 0.5)' : '#333',
-                                lineWidth: (context) => context.tick.value === 0 ? 2 : 1
+                                // Делаем нулевую ось белой и полупрозрачной (как координатную сетку)
+                                color: (context) => {
+                                    if (context.tick.value === 0) return 'rgba(255, 255, 255, 0.4)';
+                                    return '#333'; 
+                                },
+                                lineWidth: (context) => {
+                                    if (context.tick.value === 0) return 2;
+                                    return 1;
+                                }
                             }
                         }
                     },
@@ -164,31 +163,28 @@
 
         // Кнопка калибровки
         document.getElementById('calibrateBtn').addEventListener('click', () => {
-            offsetFSR = smoothedFSR; // Точкой отсчета становится текущее сглаженное давление
-            currentDisplayFSR = 0;
-            forceChart.data.datasets[0].data = Array(maxDataPoints).fill(0);
+            offsetFSR = rawFSR; // Запоминаем текущее давление как НОЛЬ
+            forceChart.data.datasets[0].data = Array(maxDataPoints).fill(0); // Стираем историю
         });
 
+        // Ползунок
         document.getElementById('sensitivitySlider').addEventListener('input', (e) => {
             sensitivity = parseFloat(e.target.value);
             document.getElementById('sensValue').innerText = sensitivity + 'x';
         });
 
         // -----------------------------------------------------
-        // НЕЗАВИСИМЫЙ ДВИЖОК ГРАФИКА (30 FPS)
-        // Гарантирует плавное движение вне зависимости от скорости Bluetooth
+        // ИГРОВОЙ ДВИЖОК ОТРИСОВКИ (40 Кадров в секунду)
+        // График обновляется независимо от Bluetooth, что убирает лаги
         // -----------------------------------------------------
         setInterval(() => {
             if (forceChart) {
-                let forceData = forceChart.data.datasets[0].data;
-                forceData.push(currentDisplayFSR);
-                forceData.shift();
                 forceChart.update('none');
             }
-        }, 33); // 33 мс = ~30 кадров в секунду
+        }, 25); // 25 мс = 40 раз в секунду
 
         // -----------------------------------------------------
-        // ПРИЕМ И ОБРАБОТКА ДАННЫХ BLE
+        // BLUETOOTH ЛОГИКА (Только принимает данные, НЕ рисует)
         // -----------------------------------------------------
         let dataBuffer = '';
 
@@ -232,20 +228,19 @@
                     let f = parseFloat(parts[0]);
                     
                     if (!isNaN(f)) {
-                        rawFSR = f; 
+                        rawFSR = f; // Получили сырое значение
                         
-                        // Экспоненциальное сглаживание (Убирает микротремор, оставляет суть)
-                        smoothedFSR = (emaAlpha * rawFSR) + ((1 - emaAlpha) * smoothedFSR);
+                        // Считаем масштаб на лету
+                        let displayFSR = (rawFSR - offsetFSR) * sensitivity;
 
-                        // Применяем калибровку и чувствительность
-                        let calcFSR = (smoothedFSR - offsetFSR) * sensitivity;
+                        // Ограничитель (чтобы график не улетал в бесконечность и не вешал Safari)
+                        if (displayFSR > 220) displayFSR = 220;
+                        if (displayFSR < -220) displayFSR = -220;
 
-                        // Ограничитель
-                        if (calcFSR > 220) calcFSR = 220;
-                        if (calcFSR < -220) calcFSR = -220;
-                        
-                        // Передаем значение в движок отрисовки
-                        currentDisplayFSR = calcFSR;
+                        // Пушим в память графика (без команды на перерисовку!)
+                        let forceData = forceChart.data.datasets[0].data;
+                        forceData.push(displayFSR);
+                        forceData.shift();
                     }
                 }
             });
