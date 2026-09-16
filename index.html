@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Кинезио Трекер ММТ (v5 - PRO)</title>
+    <title>Кинезио Трекер ММТ (v6 - Fix)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -22,7 +22,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            height: 100vh; /* Занимаем всю высоту экрана */
+            height: 100vh;
             box-sizing: border-box;
         }
         .controls {
@@ -33,7 +33,7 @@
             padding: 15px;
             margin-bottom: 10px;
             box-sizing: border-box;
-            flex-shrink: 0; /* Панель управления не сжимается */
+            flex-shrink: 0;
         }
         button {
             width: 100%;
@@ -69,7 +69,7 @@
             border-radius: 10px;
             padding: 10px;
             box-sizing: border-box;
-            flex-grow: 1; /* График занимает всё оставшееся место */
+            flex-grow: 1;
             display: flex;
             flex-direction: column;
             position: relative;
@@ -107,13 +107,12 @@
         const TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
         let forceChart;
-        const maxDataPoints = 120; // Чуть увеличил хвост истории
+        const maxDataPoints = 120;
 
         let rawFSR = 0;
         let offsetFSR = 0;
         let sensitivity = 15; 
 
-        // Массив для программного сглаживания (Moving Average)
         let fsrHistory = [];
         const smoothingWindow = 5; 
 
@@ -127,18 +126,17 @@
                         label: 'Сила',
                         data: Array(maxDataPoints).fill(0),
                         borderColor: '#2ed573',
-                        backgroundColor: 'rgba(46, 213, 115, 0.1)',
-                        borderWidth: 3,
+                        borderWidth: 2,
                         pointRadius: 0,
-                        tension: 0.2, // Делает линию более плавной
-                        fill: true
+                        tension: 0.1, // Оставили небольшое сглаживание углов
+                        fill: false // Убрали заливку, которая ломала экран
                     }]
                 },
                 options: {
                     animation: false,
                     responsive: true,
-                    maintainAspectRatio: false, // Позволяет графику тянуться на весь экран
-                    interaction: { mode: 'none' }, // Отключаем лишние расчеты наведений
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'none' },
                     scales: {
                         x: { display: false },
                         y: { min: -150, max: 150, grid: {color: '#333', zeroLineColor: '#fff'} }
@@ -149,21 +147,23 @@
         }
 
         function updateDashboard() {
-            // Сглаживание данных (убираем "пилу")
             fsrHistory.push(rawFSR);
             if (fsrHistory.length > smoothingWindow) {
                 fsrHistory.shift();
             }
             let smoothedFSR = fsrHistory.reduce((a, b) => a + b, 0) / fsrHistory.length;
 
-            // Применяем калибровку и чувствительность
             let displayFSR = (smoothedFSR - offsetFSR) * sensitivity;
+
+            // ЗАЩИТА ОТ ЗАВИСАНИЯ CANVAS (Clamping)
+            // Жестко ограничиваем значения, чтобы график не улетал в бесконечность
+            if (displayFSR > 200) displayFSR = 200;
+            if (displayFSR < -200) displayFSR = -200;
 
             let forceData = forceChart.data.datasets[0].data;
             forceData.push(displayFSR);
             forceData.shift();
             
-            // Оптимизированное обновление
             forceChart.update('none'); 
         }
         
@@ -216,7 +216,6 @@
 
             lines.forEach(line => {
                 let parts = line.trim().split(',');
-                // Берем только первое значение (FSR), игнорируя остальное
                 if (parts.length > 0) {
                     let f = parseFloat(parts[0]);
                     
